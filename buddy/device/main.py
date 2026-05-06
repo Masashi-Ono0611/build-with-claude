@@ -114,6 +114,51 @@ def _set_font():
         print("launcher: setFont fallback:", e)
 
 
+# Module-level reference so the BLE singleton survives past
+# _init_ble's frame. bluetooth.BLE() returns the same global
+# instance on every call so technically dropping the reference is
+# fine, but keeping it visible makes the lifetime obvious.
+_ble = None
+
+
+def _init_ble():
+    """Bring up NimBLE up early, before WiFi, for clean coexistence.
+
+    No advertising or service registration here — that's the
+    application layer's job (buddy_ble._ensure_stack). All we want
+    is to flip the controller into the active state while the radio
+    is still idle, so the coexistence arbiter sees BLE as a
+    registered subsystem before WiFi starts asking for slots.
+
+    The C-fault we used to hit at `active(True)` only happened when
+    the radio was already busy with WiFi traffic. Calling it here,
+    on a freshly-booted chip, is reliable in the testing we did.
+    If that ever stops being true the failure mode is a launcher
+    crash on boot — bad, but at least visible (the chip will boot-
+    loop and the serial log will show this print sequence).
+    """
+    global _ble
+    try:
+        import bluetooth
+        print("launcher: bringing up NimBLE")
+        _ble = bluetooth.BLE()
+        if not _ble.active():
+            _ble.active(True)
+        # Short settle so the controller is fully up before any
+        # later code (WiFi, app launch) starts contending for the
+        # radio. Same 250 ms we use in buddy_ble._ensure_stack.
+        time.sleep_ms(250)
+        print("launcher: NimBLE active")
+    except Exception as e:
+        # Defensive — if the import or active call somehow raises a
+        # Python-level error (rather than C-faulting the chip), the
+        # launcher should still come up. The downstream effect is
+        # that claude_buddy will then try the active(True) call
+        # itself and fall back to the old fragile path; other apps
+        # don't care.
+        print("launcher: NimBLE init warning:", e)
+
+
 def _connect_wifi_with_splash():
     """Show a Connecting splash, run the event-WiFi connect, then
     flash a Connected/Failed result for ~1.5 s before returning.
@@ -397,6 +442,20 @@ def _launch(mod_name):
 
 def main():
     _set_font()
+    # Bring up NimBLE BEFORE connecting to WiFi. ESP32's 2.4 GHz
+    # radio is shared between WiFi and BLE through a software
+    # coexistence arbiter; ESP-IDF documents that controllers
+    # initialized in BT-first order coexist far more reliably than
+    # the reverse. We learned this the hard way — claude_buddy was
+    # C-faulting at `bluetooth.BLE().active(True)` whenever it
+    # tried to bring BLE up after WiFi was already running, and no
+    # amount of "tear WiFi down first" worked because ESP32's WiFi
+    # shutdown doesn't fully release the radio back to BLE in this
+    # firmware. Doing it once here, while the radio is idle, gets
+    # NimBLE registered with the coexistence arbiter; subsequent
+    # `_ensure_stack` calls in claude_buddy see pre_active=True
+    # and skip the fault-prone transition.
+    _init_ble()
     # Connect to the event WiFi BEFORE the launcher menu so the user
     # sees the connect status as part of boot rather than a sudden
     # screen swap mid-menu. Splash takes ~3-9 s in the success case

@@ -142,12 +142,60 @@ def _intent_for_key(k):
 
 
 def run():
+    # Per-step prints so a hard fault during init (NimBLE Guru
+    # Meditation, LCD driver crash, etc.) leaves a breadcrumb on the
+    # serial console pointing at which step faulted. C-level crashes
+    # bypass the launcher's try/except and reboot the chip, so the
+    # last print before reboot is the only diagnostic we get.
+    print("claude_buddy: run() start")
+
+    # Power WiFi down before bringing up BLE. ESP32 shares a single
+    # 2.4 GHz radio between WiFi and BLE, with software coexistence
+    # arbitrating between them. The launcher (main.py) connects to
+    # the event WiFi at boot, which leaves the radio actively
+    # servicing beacons/keepalives by the time we get here.
+    # `bluetooth.BLE().active(True)` in `_ensure_stack` cold-starts
+    # the NimBLE controller, and in busy RF environments — many
+    # nearby BLE peers, lots of WiFi traffic — that init
+    # intermittently faults at the C layer and reboots the chip with
+    # no Python-catchable error. We saw this consistently with the
+    # crash log ending at `pre_active= False`. Buddy is BLE-only, so
+    # taking WiFi down for the duration of the app is harmless; the
+    # launcher reconnects on the next reboot via main.py.
+    try:
+        import network
+        sta = network.WLAN(network.STA_IF)
+        if sta.active():
+            try:
+                sta.disconnect()
+            except OSError:
+                pass
+            sta.active(False)
+        print("claude_buddy: wifi off")
+    except Exception as e:
+        # Defensive — if `network` isn't importable on this build, or
+        # the WLAN object behaves unexpectedly, we'd rather continue
+        # and risk the original coexistence crash than fail the app
+        # outright. The print is enough to investigate later.
+        print("claude_buddy: wifi disable warning:", e)
+    # Drain the radio scheduler so WiFi tx queues finish before BLE
+    # init takes over the controller. 1000 ms (was 200 ms) is the
+    # value that finally got us past intermittent NimBLE
+    # active(True) C-faults on a busy show floor — ESP32's WiFi
+    # tear-down is more leisurely than its connect path, and the
+    # 200 ms we tried first wasn't enough to fully release the
+    # radio before BLE asks for it.
+    time.sleep_ms(1000)
+
     ui = buddy_ui.BuddyUI()
+    print("claude_buddy: ui ready")
     state = buddy_state.BuddyState()
+    print("claude_buddy: state ready")
     ui.update_identity(state.name, state.owner)
 
     buddy_chars.sweep_partials()
     chars = buddy_chars.CharReceiver()
+    print("claude_buddy: chars ready")
 
     # Protocol needs a handle on the BLE object (for disconnect /
     # forget_bonds), and BLE needs the on_line callback which needs the
@@ -199,11 +247,24 @@ def run():
             if p is not None:
                 p.send_hello()
 
+    # Run a full GC pass before NimBLE init. The controller
+    # allocates several large chunks during active(True) — bonding
+    # store, advertising buffers, host/controller queues — and a
+    # fragmented MicroPython heap at this point has been observed
+    # to push allocation onto a path that C-faults instead of
+    # raising MemoryError. Cheap insurance to call gc.collect() here
+    # since we have no other allocation pressure between launcher
+    # exit and BLE init.
+    import gc
+    gc.collect()
+    print("claude_buddy: gc done, free=", gc.mem_free())
+    print("claude_buddy: constructing BuddyBLE")
     ble = buddy_ble.BuddyBLE(
         on_line=on_line,
         on_passkey=on_passkey,
         on_state=on_state_change,
     )
+    print("claude_buddy: BuddyBLE returned")
 
     proto = buddy_protocol.BuddyProtocol(
         state=state,

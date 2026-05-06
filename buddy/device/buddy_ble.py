@@ -141,7 +141,17 @@ def _ensure_stack(name_prefix: str):
     if _stack is not None:
         return _stack
 
+    print("buddy_ble: ensure_stack: BLE()")
     ble = bluetooth.BLE()
+    # Wall-time pause between instantiating the BLE singleton and
+    # asking the controller to come up. We've seen active(True)
+    # C-fault and reboot the chip when called immediately after
+    # bluetooth.BLE() — the host-side object exists but the
+    # controller chip itself isn't ready to be told "go live" yet,
+    # and the failure mode is a hard reset rather than a Python
+    # OSError we could retry. 300 ms is enough to clear that
+    # window in our testing.
+    time.sleep_ms(300)
 
     # The launcher and other apps may have left the stack in various
     # states; only call active(True) if it isn't already, since the
@@ -150,21 +160,30 @@ def _ensure_stack(name_prefix: str):
         pre_active = ble.active()
     except Exception:
         pre_active = False
+    print("buddy_ble: ensure_stack: pre_active=", pre_active)
     if not pre_active:
         ble.active(True)
     # Brief settle — premature config calls can race with the
-    # controller's init path.
-    time.sleep_ms(100)
+    # controller's init path. 250 ms (was 100 ms) gives NimBLE more
+    # headroom in busy RF environments where WiFi+BLE coexistence
+    # pressure can stretch out the controller's init path; the extra
+    # 150 ms is unnoticeable to a user but reliably moves us past the
+    # window where config calls race the controller.
+    time.sleep_ms(250)
 
+    print("buddy_ble: ensure_stack: config(mac)")
     mac = ble.config("mac")[1]
     name = "{}_{}".format(name_prefix, _mac_suffix(mac))
+    print("buddy_ble: ensure_stack: config(gap_name)")
     ble.config(gap_name=name)
 
     # gatts_register_services must run BEFORE gap_advertise on this
     # build — the reverse order (advertise first, then register)
     # returns OSError(16) EBUSY because you can't register services
     # while advertising.
+    print("buddy_ble: ensure_stack: register_services")
     ((rx_h, tx_h),) = ble.gatts_register_services((_NUS,))
+    print("buddy_ble: ensure_stack: done")
 
     # IMPORTANT: do NOT call gatts_set_buffer here. On ESP32-S3 UIFlow
     # 2.0, calling gatts_set_buffer before the first gap_advertise
@@ -447,6 +466,16 @@ class BuddyBLE:
             #    stack state; user will see no device in most scanners.
             ("empty", {}),
         ]
+        # 250 ms advertising interval (was 100 ms). 100 ms is at the
+        # aggressive end of the spec range and in busy BLE
+        # environments — many surrounding peers, active scanners, or
+        # WiFi coexistence pressure on the same 2.4 GHz radio — it
+        # significantly raises the chance of NimBLE choking during
+        # `gap_advertise`. 250 ms is still well inside "responsive
+        # discovery" territory and was the value that stopped the
+        # intermittent boot-time NimBLE faults we hit in conference
+        # / event setups with dozens of nearby BLE devices.
+        adv_interval_us = 250_000
         last_err = None
         for label, kwargs in candidates:
             try:
@@ -454,7 +483,8 @@ class BuddyBLE:
             except OSError:
                 pass
             try:
-                self._ble.gap_advertise(100_000, **kwargs)
+                print("buddy_ble: gap_advertise shape:", label)
+                self._ble.gap_advertise(adv_interval_us, **kwargs)
                 print("buddy_ble: advertising as", self._name, "shape:", label)
                 return
             except OSError as e:
