@@ -6,3 +6,6 @@ __pycache__/
 .venv/
 venv/
 .env
+
+# Local WiFi credentials (real SSID/PASSWORD) — never commit
+buddy/device/wifi_event.py
