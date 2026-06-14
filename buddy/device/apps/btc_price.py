@@ -1,15 +1,22 @@
-"""BTC/USD ticker for the M5Stack Cardputer-Adv.
+"""BTC/USD ticker + Claude's Take for the M5Stack Cardputer-Adv.
 
-Fetches the spot price from CoinGecko over WiFi and shows it big and
-centered, refreshing every ~30 s. R forces a refresh; Q / ESC exits back
-to the UIFlow launcher. Shares the same three-zone chrome as
-hello_cardputer / snake / claude_buddy.
+Auto-refreshes the BTC/USD spot price from CoinGecko (free), shown big. Press C
+to ask Claude for a one-line witty take on the current price, via the
+Anthropic-compatible endpoint configured in /flash/claude_key.py
+(BASE + Bearer TOKEN). The comment shows in a 2-line window and auto-scrolls
+when it's longer (with a "1-2/4" progress marker). R forces a price refresh;
+Q/ESC exits to the launcher.
 
-Memory note: ESP32 TLS needs a chunk of contiguous RAM for the
-handshake. Launched fresh from the launcher there's ~60 KB free, which
-is enough; we gc.collect() right before each request to keep it that
-way. Display is ASCII-only ($, digits, commas) so the LCD font renders
-it cleanly (no Japanese — that garbles on this font).
+Memory: ESP32 TLS needs ~30-40 KB free; launched fresh from the launcher
+there's ~60 KB, enough for one HTTPS call at a time. We gc.collect() before
+each request and never hold two responses open at once.
+
+Cloudflare in front of the proxy bans the default MicroPython/urllib
+User-Agent (HTTP 403 / error 1010), so we send a browser UA on the Claude
+call. Display is ASCII-only — Claude is told to reply in plain ASCII so the
+LCD font renders cleanly (no Japanese — it garbles on this font).
+
+claude_key.py lives at /flash (pushed over USB, never committed to git).
 """
 
 import gc
@@ -19,32 +26,41 @@ import M5
 import machine
 from hardware import MatrixKeyboard
 
-# Same five-color palette as the rest of the bundle, plus a red for errors.
 _BLACK = 0x000000
 _ORANGE = 0xCC785C
 _CREAM = 0xF0EEE6
 _DARK = 0x1F1F1F
 _GRAY_MID = 0x777777
 _RED = 0xE0635C
+_CYAN = 0x6FB7C9
 
 _LCD = M5.Lcd
 _W = 240
 _H = 135
 
-_API = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
-_UA = {"User-Agent": "cardputer"}
+_CG_API = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
+# Browser UA so Cloudflare doesn't 1010-ban the proxy call.
+_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 _REFRESH_MS = 30000
+_MODEL = "claude-haiku-4-5"
+
+# Comment viewport: show 2 lines; auto-scroll when the wrapped quip is longer.
+_TAKE_CLEAR_Y = 75          # comment zone starts here (below the big price)
+_TAKE_TOP = 77              # first comment line y
+_TAKE_LINE_H = 13
+_TAKE_VISIBLE = 2           # lines shown at once
+_TAKE_SCROLL_MS = 1800      # advance one line every 1.8 s
 
 
 def _set_font():
     try:
         _LCD.setFont(_LCD.FONTS.DejaVu9)
     except Exception as e:
-        print("btc: setFont fallback:", e)
+        print("take: setFont fallback:", e)
 
 
 def _ensure_wifi(timeout_ms=10000):
-    """True once the STA has an IP. Reuses the bundle's wifi_event creds."""
     import sys
     if "/flash" not in sys.path:
         sys.path.insert(0, "/flash")
@@ -58,29 +74,72 @@ def _ensure_wifi(timeout_ms=10000):
         import wifi_event
         return bool(wifi_event.connect(timeout_ms).get("ok"))
     except Exception as e:
-        print("btc: wifi err", e)
+        print("take: wifi err", e)
         return sta.isconnected()
 
 
 def _fetch_btc_usd():
-    """Return int USD price, or None on any failure."""
     import json
     import requests
-    gc.collect()  # give the TLS handshake the most contiguous RAM we can
+    gc.collect()
     try:
-        r = requests.get(_API, headers=_UA)
+        r = requests.get(_CG_API, headers={"User-Agent": "cardputer"})
         try:
             body = r.text
         finally:
             r.close()
         return int(json.loads(body)["bitcoin"]["usd"])
     except Exception as e:
-        print("btc: fetch err", repr(e))
+        print("take: price err", repr(e))
         return None
 
 
+def _claude_take(price):
+    """One short ASCII quip about the price, or a short error marker."""
+    import sys
+    if "/flash" not in sys.path:
+        sys.path.insert(0, "/flash")
+    import json
+    import requests
+    try:
+        from claude_key import BASE, TOKEN
+    except Exception:
+        return "(no /flash/claude_key.py)"
+    gc.collect()
+    url = BASE.rstrip("/") + "/v1/messages"
+    prompt = ("BTC is ${}. Give ONE short witty one-liner about it. "
+              "Max 16 words. Plain ASCII only, no emoji.").format(price)
+    body = json.dumps({
+        "model": _MODEL,
+        "max_tokens": 60,
+        "messages": [{"role": "user", "content": prompt}],
+    })
+    try:
+        r = requests.post(url, headers={
+            "Authorization": "Bearer " + TOKEN,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+            "User-Agent": _UA,
+        }, data=body)
+        try:
+            txt = r.text
+            code = r.status_code
+        finally:
+            r.close()
+        if code != 200:
+            print("take: claude HTTP", code, txt[:120])
+            return "(claude {} err)".format(code)
+        data = json.loads(txt)
+        for blk in data.get("content", []):
+            if blk.get("type") == "text":
+                return blk.get("text", "").strip()
+        return "(empty reply)"
+    except Exception as e:
+        print("take: claude err", repr(e))
+        return "(claude net err)"
+
+
 def _fmt_usd(n):
-    """64556 -> '$64,556'."""
     s = str(int(n))
     out = ""
     while len(s) > 3:
@@ -89,63 +148,93 @@ def _fmt_usd(n):
     return "$" + s + out
 
 
+def _wrap(text, width=36, maxlines=8):
+    lines = []
+    cur = ""
+    for w in text.split():
+        if len(cur) + len(w) + (1 if cur else 0) <= width:
+            cur = (cur + " " + w) if cur else w
+        else:
+            lines.append(cur)
+            cur = w
+            if len(lines) >= maxlines:
+                return lines
+    if cur and len(lines) < maxlines:
+        lines.append(cur)
+    return lines
+
+
 def _draw_chrome():
     _LCD.fillScreen(_BLACK)
-    _LCD.fillRect(0, 0, _W, 20, _DARK)
-    _LCD.fillRect(0, 20, _W, 1, _ORANGE)
+    _LCD.fillRect(0, 0, _W, 16, _DARK)
+    _LCD.fillRect(0, 16, _W, 1, _ORANGE)
     _LCD.setTextSize(1)
     _LCD.setTextColor(_ORANGE, _DARK)
-    _LCD.drawString("BTC / USD", 6, 5)
-    _LCD.fillRect(0, _H - 18, _W, 18, _DARK)
+    _LCD.drawString("BTC/USD + Claude", 6, 3)
+    _LCD.fillRect(0, _H - 16, _W, 16, _DARK)
     _LCD.setTextColor(_GRAY_MID, _DARK)
-    hint = "R refresh   Q/ESC menu"
-    _LCD.drawString(hint, (_W - _LCD.textWidth(hint)) // 2, _H - 14)
+    hint = "C Claude  R refresh  Q menu"
+    _LCD.drawString(hint, (_W - _LCD.textWidth(hint)) // 2, _H - 13)
 
 
-def _draw_body(price, status):
-    # Wipe the content zone between the header hairline and the hint strip.
-    _LCD.fillRect(0, 21, _W, _H - 21 - 18, _BLACK)
+def _draw_price(price, status):
+    # big price + status zone: y = 18..73 (kept clear of the comment zone at 75)
+    _LCD.fillRect(0, 18, _W, 56, _BLACK)
     if price is None:
         _LCD.setTextSize(2)
         _LCD.setTextColor(_RED, _BLACK)
-        m = "--"
-        _LCD.drawString(m, (_W - _LCD.textWidth(m)) // 2, 50)
+        _LCD.drawString("--", (_W - _LCD.textWidth("--")) // 2, 28)
     else:
         t = _fmt_usd(price)
         _LCD.setTextSize(3)
         _LCD.setTextColor(_CREAM, _BLACK)
-        _LCD.drawString(t, (_W - _LCD.textWidth(t)) // 2, 44)
+        _LCD.drawString(t, (_W - _LCD.textWidth(t)) // 2, 20)
     _LCD.setTextSize(1)
     _LCD.setTextColor(_GRAY_MID, _BLACK)
-    _LCD.drawString(status, (_W - _LCD.textWidth(status)) // 2, 90)
+    _LCD.drawString(status, (_W - _LCD.textWidth(status)) // 2, 63)
 
 
-def _is_exit(k):
+def _draw_take(lines, off, color):
+    # 2-line comment window + a "off+1-off+2/total" marker when scrollable.
+    _LCD.fillRect(0, _TAKE_CLEAR_Y, _W, _H - _TAKE_CLEAR_Y - 16, _BLACK)
+    _LCD.setTextSize(1)
+    _LCD.setTextColor(color, _BLACK)
+    y = _TAKE_TOP
+    for ln in lines[off:off + _TAKE_VISIBLE]:
+        _LCD.drawString(ln, (_W - _LCD.textWidth(ln)) // 2, y)
+        y += _TAKE_LINE_H
+    if len(lines) > _TAKE_VISIBLE:
+        _LCD.setTextColor(_GRAY_MID, _BLACK)
+        ind = "{}-{}/{}".format(off + 1, min(off + _TAKE_VISIBLE, len(lines)), len(lines))
+        _LCD.drawString(ind, (_W - _LCD.textWidth(ind)) // 2, _H - 16 - 10)
+
+
+def _is(k, chars):
     if isinstance(k, int):
-        if k == 0x1B:
+        if k == 0x1B and "\x1b" in chars:
             return True
         if 0x20 <= k <= 0x7E:
             k = chr(k)
         else:
             return False
-    return isinstance(k, str) and k.lower() == "q"
-
-
-def _is_refresh(k):
-    if isinstance(k, int) and 0x20 <= k <= 0x7E:
-        k = chr(k)
-    return isinstance(k, str) and k.lower() == "r"
+    return isinstance(k, str) and k.lower() in chars
 
 
 def run():
     _set_font()
     _draw_chrome()
-    _draw_body(None, "connecting wifi...")
+    _draw_price(None, "connecting wifi...")
     wifi_ok = _ensure_wifi()
-    _draw_body(None, "fetching..." if wifi_ok else "wifi failed - R to retry")
+    _draw_price(None, "fetching..." if wifi_ok else "wifi failed - press R")
+
+    take_lines = ["Press C for Claude's take"]
+    take_color = _GRAY_MID
+    take_off = 0
+    take_t = 0
+    _draw_take(take_lines, take_off, take_color)
 
     kb = MatrixKeyboard()
-    time.sleep_ms(400)  # swallow the App-List launch keypress
+    time.sleep_ms(400)
 
     price = None
     last = 0
@@ -154,23 +243,46 @@ def run():
         while True:
             kb.tick()
             k = kb.get_key()
-            if _is_exit(k):
+            if _is(k, ("q", "\x1b")):
                 return
             now = time.ticks_ms()
-            if first or _is_refresh(k) or time.ticks_diff(now, last) >= _REFRESH_MS:
+            if first or _is(k, ("r",)) or time.ticks_diff(now, last) >= _REFRESH_MS:
                 first = False
-                _draw_body(price, "updating...")
-                if not _ensure_wifi():
-                    _draw_body(price, "wifi down - R to retry")
-                else:
+                _draw_price(price, "updating price...")
+                if _ensure_wifi():
                     p = _fetch_btc_usd()
                     if p is not None:
                         price = p
-                        print("btc: live", price)
-                        _draw_body(price, "coingecko  *live*")
+                        _draw_price(price, "coingecko  *live*")
                     else:
-                        _draw_body(price, "fetch failed - R to retry")
+                        _draw_price(price, "price fail - press R")
+                else:
+                    _draw_price(price, "wifi down - press R")
                 last = time.ticks_ms()
+            if _is(k, ("c",)):
+                if price is None:
+                    take_lines = ["No price yet - press R"]
+                    take_color = _RED
+                elif _ensure_wifi():
+                    take_color = _ORANGE
+                    _draw_take(["asking Claude..."], 0, take_color)
+                    quip = _claude_take(price)
+                    print("take: claude said:", quip)
+                    take_lines = _wrap(quip)
+                    take_color = _CYAN
+                else:
+                    take_lines = ["wifi down - press R"]
+                    take_color = _RED
+                take_off = 0
+                take_t = time.ticks_ms()
+                _draw_take(take_lines, take_off, take_color)
+            # Auto-scroll the comment when it overflows the 2-line window.
+            if len(take_lines) > _TAKE_VISIBLE and time.ticks_diff(now, take_t) >= _TAKE_SCROLL_MS:
+                take_off += 1
+                if take_off > len(take_lines) - _TAKE_VISIBLE:
+                    take_off = 0
+                _draw_take(take_lines, take_off, take_color)
+                take_t = now
             time.sleep_ms(50)
     finally:
         try:
