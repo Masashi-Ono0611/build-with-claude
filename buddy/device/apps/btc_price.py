@@ -3,9 +3,9 @@
 Auto-refreshes the BTC/USD spot price from CoinGecko (free), shown big. Press C
 to ask Claude for a one-line witty take on the current price, via the
 Anthropic-compatible endpoint configured in /flash/claude_key.py
-(BASE + Bearer TOKEN). The comment shows in a 2-line window and auto-scrolls
-when it's longer (with a "1-2/4" progress marker). R forces a price refresh;
-Q/ESC exits to the launcher.
+(BASE + Bearer TOKEN). The comment shows in a 2-line window; when it's longer
+you scroll it manually with the Up/Down arrow keys (a "1-2/4" marker shows
+position). R forces a price refresh; Q/ESC exits to the launcher.
 
 Memory: ESP32 TLS needs ~30-40 KB free; launched fresh from the launcher
 there's ~60 KB, enough for one HTTPS call at a time. We gc.collect() before
@@ -28,11 +28,11 @@ from hardware import MatrixKeyboard
 
 _BLACK = 0x000000
 _ORANGE = 0xCC785C
-_CREAM = 0xF0EEE6
 _DARK = 0x1F1F1F
 _GRAY_MID = 0x777777
 _RED = 0xE0635C
 _CYAN = 0x6FB7C9
+_BTC = 0xF7931A      # Bitcoin brand orange
 
 _LCD = M5.Lcd
 _W = 240
@@ -45,12 +45,11 @@ _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
 _REFRESH_MS = 30000
 _MODEL = "claude-haiku-4-5"
 
-# Comment viewport: show 2 lines; auto-scroll when the wrapped quip is longer.
+# Comment viewport: show 2 lines; scroll the rest manually with Up/Down keys.
 _TAKE_CLEAR_Y = 75          # comment zone starts here (below the big price)
 _TAKE_TOP = 77              # first comment line y
 _TAKE_LINE_H = 13
 _TAKE_VISIBLE = 2           # lines shown at once
-_TAKE_SCROLL_MS = 1800      # advance one line every 1.8 s
 
 
 def _set_font():
@@ -170,7 +169,7 @@ def _draw_chrome():
     _LCD.fillRect(0, 16, _W, 1, _ORANGE)
     _LCD.setTextSize(1)
     _LCD.setTextColor(_ORANGE, _DARK)
-    _LCD.drawString("BTC/USD + Claude", 6, 3)
+    _LCD.drawString("Bitcoin Price", 6, 3)
     _LCD.fillRect(0, _H - 16, _W, 16, _DARK)
     _LCD.setTextColor(_GRAY_MID, _DARK)
     hint = "C Claude  R refresh  Q menu"
@@ -187,7 +186,7 @@ def _draw_price(price, status):
     else:
         t = _fmt_usd(price)
         _LCD.setTextSize(3)
-        _LCD.setTextColor(_CREAM, _BLACK)
+        _LCD.setTextColor(_BTC, _BLACK)
         _LCD.drawString(t, (_W - _LCD.textWidth(t)) // 2, 20)
     _LCD.setTextSize(1)
     _LCD.setTextColor(_GRAY_MID, _BLACK)
@@ -230,7 +229,6 @@ def run():
     take_lines = ["Press C for Claude's take"]
     take_color = _GRAY_MID
     take_off = 0
-    take_t = 0
     _draw_take(take_lines, take_off, take_color)
 
     kb = MatrixKeyboard()
@@ -274,15 +272,16 @@ def run():
                     take_lines = ["wifi down - press R"]
                     take_color = _RED
                 take_off = 0
-                take_t = time.ticks_ms()
                 _draw_take(take_lines, take_off, take_color)
-            # Auto-scroll the comment when it overflows the 2-line window.
-            if len(take_lines) > _TAKE_VISIBLE and time.ticks_diff(now, take_t) >= _TAKE_SCROLL_MS:
-                take_off += 1
-                if take_off > len(take_lines) - _TAKE_VISIBLE:
-                    take_off = 0
-                _draw_take(take_lines, take_off, take_color)
-                take_t = now
+            # Manual scroll only (Down/Up arrow keys) - no auto-scroll.
+            elif _is(k, (".", "/", "s")):
+                if take_off < len(take_lines) - _TAKE_VISIBLE:
+                    take_off += 1
+                    _draw_take(take_lines, take_off, take_color)
+            elif _is(k, (";", ",", "w")):
+                if take_off > 0:
+                    take_off -= 1
+                    _draw_take(take_lines, take_off, take_color)
             time.sleep_ms(50)
     finally:
         try:
