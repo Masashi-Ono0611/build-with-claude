@@ -473,17 +473,19 @@ def _send_flow(kb, address):
             value = 0
             data = acct.erc20_transfer_data(to_bytes, amount)
             tx_to = acct.addr_to_bytes(cfg.ERC20_ADDRESS)
-            # A revert here (e.g. token balance too low) is the node saying
-            # "this tx will fail" — let it raise and abort, rather than
-            # broadcasting a guaranteed-revert tx that just burns gas.
-            gas = rpc.estimate_gas(address, cfg.ERC20_ADDRESS, 0,
-                                   "0x" + ba.hexlify(data).decode())
-            gas = gas * 12 // 10            # 20% headroom
+            est_to, est_val, est_data = cfg.ERC20_ADDRESS, 0, "0x" + ba.hexlify(data).decode()
         else:
             value = amount
             data = b""
             tx_to = to_bytes
-            gas = 21000
+            est_to, est_val, est_data = to_addr, amount, "0x"
+        # Always estimate gas. 21000 is only correct for a plain-EOA
+        # recipient; a contract — or an EIP-7702-delegated account — runs
+        # code on receive and needs more, so a hardcoded 21000 mines as a
+        # failed (out-of-gas) tx. A revert here (e.g. token balance too low,
+        # or a recipient that rejects the transfer) aborts the send instead
+        # of broadcasting a guaranteed failure. +20% headroom.
+        gas = rpc.estimate_gas(address, est_to, est_val, est_data) * 12 // 10
         gas_price = rpc.gas_price()
         gas_price = gas_price * 12 // 10 if gas_price else 1000000000
         nonce = rpc.get_nonce(address)
