@@ -49,9 +49,21 @@ DEFAULT_FILES = [
     "buddy_protocol.py",
     "burst_frames.py",
     "wifi_event.py",
+    # Base Sepolia wallet: shared eth_* libs live at /flash root (the
+    # launcher only lists apps/, so these stay out of the menu) and the
+    # app itself under apps/. wallet.dat is generated on-device and is
+    # intentionally NOT pushed (it holds the encrypted private key).
+    "eth_keccak.py",
+    "eth_rlp.py",
+    "eth_secp256k1.py",
+    "eth_account.py",
+    "eth_rpc.py",
+    "eth_config.py",
+    "eth_keystore.py",
     "apps/claude_buddy.py",
     "apps/hello_cardputer.py",
     "apps/snake.py",
+    "apps/base_wallet.py",
 ]
 
 CHUNK_BYTES = 512  # source bytes per paste-mode write

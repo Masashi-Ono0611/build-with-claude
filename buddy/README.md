@@ -21,6 +21,30 @@ MicroPython app bundle for the M5Stack Cardputer-Adv. Installed onto `/flash/` b
 
 Open Claude → Developer menu → **Hardware Buddy** → Connect. BLE-only. Stats (approvals / denials / level) persist across reboots via NVS under the `buddy` namespace.
 
+## Base Wallet (on-chain, testnet)
+
+`apps/base_wallet.py` is a self-contained Ethereum wallet for the **Base Sepolia** testnet (chain id 84532). The private key is generated on-device (hardware RNG), encrypted at rest with a PIN, and used to **sign transactions locally** — keccak256, secp256k1 ECDSA (RFC 6979 deterministic, low-s, EIP-155) and RLP are all pure MicroPython, since the UIFlow firmware ships no crypto beyond sha256/AES. Signed transactions are broadcast over WiFi+HTTPS via the public `sepolia.base.org` RPC.
+
+What it does: create/unlock a PIN-protected wallet, show the address + native ETH balance + an ERC-20 balance (Base Sepolia USDC by default), and send native ETH or an ERC-20 transfer with an explicit confirm screen before signing.
+
+```
+/flash/
+├── eth_keccak.py       keccak256 (Ethereum 0x01 padding)
+├── eth_secp256k1.py    ECDSA sign (RFC6979 + recovery id), pubkey derivation
+├── eth_rlp.py          RLP encoder
+├── eth_account.py      address derivation, legacy EIP-155 tx, ERC-20 calldata
+├── eth_rpc.py          Base Sepolia JSON-RPC over HTTPS
+├── eth_keystore.py     PIN → PBKDF2 → AES-256-CBC keystore (wallet.dat)
+├── eth_config.py       RPC endpoints / chain id / token (non-secret)
+└── apps/base_wallet.py the wallet UI
+```
+
+The shared `eth_*` libs sit at `/flash` root so they import cleanly but don't show up as launcher menu entries (the launcher only lists `apps/`).
+
+> **TESTNET ONLY.** The key lives in flash encrypted by a short PIN on a dev board — this is not a secure element. Fund the address only with throwaway Base Sepolia test ETH from a faucet (Alchemy / thirdweb / QuickNode). First boot shows your new address; copy it to a faucet, then press **B** to load balances and **S** to send.
+
+The crypto is verified on-device against canonical vectors (EIP-155 example transaction, Hardhat account #0 address, keccak empty/abc) and a full sign+RLP+keccak pipeline runs in ~0.6 s.
+
 ## Iterating on device code
 
 `scripts/` has dev tooling for editing device sources without re-running the full onboard flow:
