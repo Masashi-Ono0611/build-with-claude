@@ -9,3 +9,7 @@ venv/
 
 # Local WiFi credentials (real SSID/PASSWORD) — never commit
 buddy/device/wifi_event.py
+
+# Encrypted wallet keystore — generated on-device, never commit
+buddy/device/wallet.dat
+wallet.dat
