@@ -13,3 +13,6 @@ buddy/device/wifi_event.py
 # Encrypted wallet keystore — generated on-device, never commit
 buddy/device/wallet.dat
 wallet.dat
+
+# Local QA secrets (throwaway testnet keys for base_wallet QA) — never commit
+.env.qa
