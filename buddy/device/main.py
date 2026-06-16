@@ -509,23 +509,30 @@ def main():
     frame_ms = _burst.FRAME_MS if _burst is not None else 80
     last_frame_ms = time.ticks_ms()
 
-    # Keyboard self-heal: if the matrix IC wasn't ready when `kb` was built
-    # above, rebuild it once ~6 s in (the IC is up by then). Targets only
-    # the stuck case — disabled the moment any key registers, so a healthy
-    # keyboard is never rebuilt mid-use.
-    any_key = False
-    kb_reinit_done = False
-    loop_start = time.ticks_ms()
+    # Keyboard self-heal: the matrix IC sometimes isn't ready when `kb` was
+    # built above, leaving it dead for the whole session (menu draws, no key
+    # registers). Rebuild it UNCONDITIONALLY a few times over the first
+    # ~7.5 s — by then the IC is definitely up.
+    #
+    # Why unconditional (no "stop once a key registers" guard): a dead IC can
+    # return GARBAGE from get_key() rather than None, so an any-key guard gets
+    # defeated the instant the user mashes keys to wake it — exactly when they
+    # need the rebuild. Rebuilding a healthy keyboard is harmless: it's a fresh
+    # instance on a ready IC, costs at most one dropped poll, and all of it
+    # finishes in the first 7.5 s before the user is navigating. Three tries
+    # at 2.5 s spacing also recover the slowest units far sooner than the old
+    # single 6 s attempt (which a key-mash could cancel entirely).
+    kb_reinits = 0
+    last_reinit = time.ticks_ms()
 
     while True:
         kb.tick()
         k = kb.get_key()
-        if k is not None:
-            any_key = True
-        if (not kb_reinit_done and not any_key and
-                time.ticks_diff(time.ticks_ms(), loop_start) > 6000):
+        if (kb_reinits < 3 and
+                time.ticks_diff(time.ticks_ms(), last_reinit) > 2500):
             kb = MatrixKeyboard()
-            kb_reinit_done = True
+            last_reinit = time.ticks_ms()
+            kb_reinits += 1
         intent = _intent(k)
         if intent == "up":
             cursor = (cursor - 1) % len(apps)
