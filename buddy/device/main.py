@@ -485,10 +485,15 @@ def main():
     # so this shows up as "animation plays but keys never register" —
     # confusing, because the launcher looks healthy.
     #
-    # Empirically, 800 ms of pre-kb sleep is enough to let the matrix
-    # IC come fully online on a cold power-on. A freshly-instantiated
-    # MatrixKeyboard after that delay works correctly.
-    time.sleep_ms(800)
+    # 800 ms proved too short on some Cardputer-Adv units: the matrix IC
+    # can take several seconds after a cold power-on, and a MatrixKeyboard
+    # built before then stays dead for the whole session — the menu draws
+    # but no key registers, locking the user out of every app. We wait a
+    # bit longer here and, crucially, self-heal in the loop below by
+    # rebuilding the keyboard once if nothing has registered after a few
+    # seconds (by then the IC is definitely up). That keeps the fixed wait
+    # short while still recovering on the slowest units.
+    time.sleep_ms(1500)
     kb = MatrixKeyboard()
     # Additional 400 ms debounce of the key used to land here (Enter
     # from the previous app's reset chain, or the initial power-on
@@ -504,9 +509,24 @@ def main():
     frame_ms = _burst.FRAME_MS if _burst is not None else 80
     last_frame_ms = time.ticks_ms()
 
+    # Keyboard self-heal: if the matrix IC wasn't ready when `kb` was built
+    # above, rebuild it once ~6 s in (the IC is up by then). Targets only
+    # the stuck case — disabled the moment any key registers, so a healthy
+    # keyboard is never rebuilt mid-use.
+    any_key = False
+    kb_reinit_done = False
+    loop_start = time.ticks_ms()
+
     while True:
         kb.tick()
-        intent = _intent(kb.get_key())
+        k = kb.get_key()
+        if k is not None:
+            any_key = True
+        if (not kb_reinit_done and not any_key and
+                time.ticks_diff(time.ticks_ms(), loop_start) > 6000):
+            kb = MatrixKeyboard()
+            kb_reinit_done = True
+        intent = _intent(k)
         if intent == "up":
             cursor = (cursor - 1) % len(apps)
             if cursor < scroll_top:
