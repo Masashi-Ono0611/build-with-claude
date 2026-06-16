@@ -34,10 +34,21 @@ for _p in ("/flash", "/flash/apps"):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import eth_account as acct
 import eth_config as cfg
-import eth_keystore as ks
 import eth_rpc as rpc
+# eth_account (and, through it, eth_rlp + eth_keccak's round-constant tables)
+# is imported lazily — only on the send path, never for balance display. The
+# balance path needs just two trivial helpers (address->bytes and balanceOf
+# calldata), inlined below as _addr_to_bytes / _erc20_balanceof_data; neither
+# touches keccak or RLP. Likewise eth_keystore (and, through it,
+# eth_secp256k1) loads only when creating a wallet or signing.
+#
+# This matters because on this no-PSRAM ESP32-S3 the TLS handshake needs a
+# large *contiguous* block, and MicroPython's GC doesn't compact. Measured:
+# with eth_account resident the balance fetch fails with OSError(12) ENOMEM
+# at ~56 KB free (plenty of total heap, too fragmented for the ~30-40 KB
+# contiguous TLS alloc); keeping the keccak/RLP/secp stack out until a send
+# is what lets eth_getBalance / eth_call succeed.
 
 _BLACK = 0x000000
 _ORANGE = 0xCC785C
@@ -229,6 +240,30 @@ def _wifi_ok():
 
 
 # --------------------------------------------------------------------------
+# Lightweight ABI helpers (no keccak / RLP — see the import note up top).
+# These cover the balance/display + recipient-validation paths so eth_account
+# stays off the heap until a send. The send path lazy-imports eth_account and
+# uses its (identical) addr_to_bytes plus the keccak/RLP-backed builders.
+# --------------------------------------------------------------------------
+
+_SEL_BALANCEOF = b"\x70\xa0\x82\x31"   # balanceOf(address), ERC-20 standard
+
+
+def _addr_to_bytes(addr):
+    """'0x..40hex..' or 40-hex -> 20 bytes. Mirror of eth_account.addr_to_bytes."""
+    if addr.startswith("0x") or addr.startswith("0X"):
+        addr = addr[2:]
+    if len(addr) != 40:
+        raise ValueError("address must be 20 bytes (40 hex chars)")
+    return bytes(int(addr[i:i + 2], 16) for i in range(0, 40, 2))
+
+
+def _erc20_balanceof_data(owner_bytes):
+    """calldata for ERC-20 balanceOf(owner): selector + 32-byte left-pad."""
+    return _SEL_BALANCEOF + b"\x00" * (32 - len(owner_bytes)) + owner_bytes
+
+
+# --------------------------------------------------------------------------
 # Amount formatting / parsing
 # --------------------------------------------------------------------------
 
@@ -257,8 +292,24 @@ def _parse_units(s, decimals):
 # Screens
 # --------------------------------------------------------------------------
 
+def _load_address():
+    """Read the stored checksum address straight from wallet.dat (no PIN, no
+    crypto modules) so the balance path stays off the heavy signing stack.
+
+    Returns None on a missing file (OSError) or a truncated/corrupt keystore
+    (ValueError from json.load) so a damaged wallet.dat drops into the
+    create-wallet flow instead of crashing the app at startup."""
+    try:
+        import json
+        with open("/flash/wallet.dat") as f:
+            return json.load(f).get("address")
+    except (OSError, ValueError):
+        return None
+
+
 def _create_wallet(kb):
     """First-run flow: set a PIN, generate + persist a wallet. Returns addr."""
+    import eth_keystore as ks
     _chrome("Create wallet", "Enter=continue  ESC=quit")
     _status(["No wallet found.", "Let's create one.", "", "TESTNET ONLY"],
             _CREAM, 30)
@@ -298,6 +349,7 @@ def _create_wallet(kb):
 
 def _enter_pin(kb):
     """Prompt for the PIN and return the unlocked private key int, or None."""
+    import eth_keystore as ks
     while True:
         pin = _text_entry(kb, "Unlock", "enter PIN", "0123456789",
                           mask=True, maxlen=8)
@@ -324,7 +376,7 @@ def _fetch_balances(addr):
         print("wallet: eth bal err", repr(e))
     try:
         import ubinascii as ba
-        data = acct.erc20_balanceof_data(acct.addr_to_bytes(addr))
+        data = _erc20_balanceof_data(_addr_to_bytes(addr))
         res = rpc.eth_call(cfg.ERC20_ADDRESS, "0x" + ba.hexlify(data).decode())
         tok = int(res, 16) if res and res != "0x" else 0
     except Exception as e:
@@ -365,7 +417,7 @@ def _choose_recipient(kb, own_addr):
     if addr is None:
         return None
     try:
-        acct.addr_to_bytes(addr)
+        _addr_to_bytes(addr)
     except Exception:
         _status(["Invalid address"], _RED, 56)
         time.sleep_ms(1200)
@@ -468,12 +520,22 @@ def _send_flow(kb, address):
     _status(["Fetching gas/nonce..."], _ORANGE, 56)
     try:
         import ubinascii as ba
-        to_bytes = acct.addr_to_bytes(to_addr)
+        to_bytes = _addr_to_bytes(to_addr)
         if is_erc20:
+            # ERC-20 transfer calldata needs eth_account (-> eth_rlp). Build
+            # it, then IMMEDIATELY drop eth_account/rlp/keccak so the gas /
+            # nonce / balance TLS calls below get a contiguous heap. `data`
+            # and the est_* values are plain bytes/str and survive the evict.
+            import eth_account as acct
             value = 0
             data = acct.erc20_transfer_data(to_bytes, amount)
-            tx_to = acct.addr_to_bytes(cfg.ERC20_ADDRESS)
+            tx_to = _addr_to_bytes(cfg.ERC20_ADDRESS)
             est_to, est_val, est_data = cfg.ERC20_ADDRESS, 0, "0x" + ba.hexlify(data).decode()
+            del acct
+            for _m in ("eth_account", "eth_rlp", "eth_keccak"):
+                if _m in sys.modules:
+                    del sys.modules[_m]
+            gc.collect()
         else:
             value = amount
             data = b""
@@ -512,10 +574,23 @@ def _send_flow(kb, address):
         return
     _status(["Signing..."], _ORANGE, 56)
     try:
+        # Re-import eth_account (evicted after the calldata build above) for
+        # the RLP encode + keccak hash; eth_secp256k1 / eth_keystore load
+        # lazily inside sign_legacy_tx / the unlock that produced `priv`.
+        import eth_account as acct
         raw, txh = acct.sign_legacy_tx(priv, nonce, gas_price, gas, tx_to,
                                        value, data, cfg.CHAIN_ID)
     finally:
         priv = None
+        acct = None
+        # Drop the full signing stack (account + rlp + keccak + secp +
+        # keystore) before the broadcast so eth_sendRawTransaction's TLS
+        # handshake gets a contiguous heap block again — same ENOMEM-
+        # avoidance as the lazy imports above.
+        for _m in ("eth_secp256k1", "eth_keystore", "eth_account",
+                   "eth_rlp", "eth_keccak"):
+            if _m in sys.modules:
+                del sys.modules[_m]
         gc.collect()
     _status(["Broadcasting..."], _ORANGE, 56)
     try:
@@ -531,6 +606,23 @@ def _send_flow(kb, address):
 
 
 def run():
+    # We arrive here via the launcher's __import__, which leaves its own
+    # modules resident: the burst-animation frames (several KB of frame data)
+    # and the NimBLE stack (which this app doesn't use). Both fragment the
+    # heap enough to starve the TLS handshake's contiguous allocation, so
+    # release them up front — the launcher re-imports/re-inits them on the
+    # machine.reset() return path, so this is local to our run.
+    if "burst_frames" in sys.modules:
+        del sys.modules["burst_frames"]
+    try:
+        import bluetooth
+        _b = bluetooth.BLE()
+        if _b.active():
+            _b.active(False)
+        del _b
+    except Exception as e:
+        print("wallet: ble deinit skip", e)
+    gc.collect()
     _set_font()
     _chrome("Base Wallet", "")
     _status(["Connecting WiFi..."], _ORANGE, 56)
@@ -540,7 +632,7 @@ def run():
     time.sleep_ms(400)
 
     # Load or create the wallet.
-    address = ks.load_address()
+    address = _load_address()
     if address is None:
         address = _create_wallet(kb)
         if address is None:
