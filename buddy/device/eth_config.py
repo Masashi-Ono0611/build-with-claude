@@ -23,8 +23,12 @@ ERC20_SYMBOL = "USDC"
 ERC20_DECIMALS = 6
 
 # Optional saved recipients so the user can pick instead of typing a full
-# 42-char address on the tiny keyboard. Each entry is (label, address).
-ADDRESS_BOOK = ()
+# 42-char address on the tiny keyboard. Each entry is (label, address). The
+# send flow offers these between "Self (own address)" and "Type address...".
+# Testnet-only addresses; safe to commit (public on BaseScan).
+ADDRESS_BOOK = (
+    ("Test EOA 2", "0xC94d68094FA65E991dFfa0A941306E8460876169"),
+)
 
 # Some public endpoints sit behind Cloudflare, which 1010-bans the default
 # MicroPython urllib User-Agent. Send a browser UA to be safe (matches the
