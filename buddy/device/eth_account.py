@@ -9,8 +9,14 @@ form, and accepted on Base Sepolia. Verified on-device:
 """
 
 import eth_rlp as _rlp
-import eth_secp256k1 as _secp
 from eth_keccak import keccak256
+
+# eth_secp256k1 is imported lazily inside the functions that need it
+# (address-from-private-key and signing). It carries the curve constants
+# and Jacobian routines — leaving it out of the balance/display path keeps
+# the heap defragmented enough for the TLS handshake on this 8 MB-no-PSRAM
+# ESP32-S3 (a loaded secp + UI draws fragment the ~50 KB heap past what a
+# TLS connection's contiguous allocation needs).
 
 # ERC-20 4-byte function selectors (first 4 bytes of keccak256 of the
 # signature). Hardcoded — these are fixed by the ERC-20 standard.
@@ -42,6 +48,7 @@ def address_from_pubkey(pub64):
 
 
 def address_from_privkey(priv):
+    import eth_secp256k1 as _secp
     return address_from_pubkey(_secp.privkey_to_pubkey(priv))
 
 
@@ -65,6 +72,7 @@ def sign_legacy_tx(priv, nonce, gas_price, gas_limit, to_bytes, value, data, cha
     eth_sendRawTransaction (hex-encode with 0x prefix); tx_hash_bytes is
     keccak256 of the signed tx = the hash the node will report.
     """
+    import eth_secp256k1 as _secp
     unsigned = [nonce, gas_price, gas_limit, to_bytes, value, data, chain_id, 0, 0]
     sighash = keccak256(_rlp.encode(unsigned))
     r, s, rec = _secp.sign(priv, sighash)
