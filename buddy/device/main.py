@@ -40,7 +40,7 @@ import time
 
 import M5
 import machine
-from hardware import MatrixKeyboard
+from kbheal import Keys
 
 
 # boot_option=2 skips UIFlow's framework entirely, which means
@@ -429,7 +429,7 @@ def _launch(mod_name):
             del sys.modules[mod_name]
         except KeyError:
             pass
-        kb = MatrixKeyboard()
+        kb = Keys()
         while True:
             kb.tick()
             if kb.get_key() is not None:
@@ -486,15 +486,12 @@ def main():
     # confusing, because the launcher looks healthy.
     #
     # 800 ms proved too short on some Cardputer-Adv units: the matrix IC
-    # can take several seconds after a cold power-on, and a MatrixKeyboard
-    # built before then stays dead for the whole session — the menu draws
-    # but no key registers, locking the user out of every app. We wait a
-    # bit longer here and, crucially, self-heal in the loop below by
-    # rebuilding the keyboard once if nothing has registered after a few
-    # seconds (by then the IC is definitely up). That keeps the fixed wait
-    # short while still recovering on the slowest units.
+    # can take several seconds after a cold power-on. We wait a bit longer
+    # here, and ``Keys`` (see kbheal.py) self-heals anyway — it rebuilds the
+    # underlying MatrixKeyboard on a fixed cadence for the whole session, so
+    # both a slow-to-wake IC and a mid-session wedge recover within ~2.5 s.
     time.sleep_ms(1500)
-    kb = MatrixKeyboard()
+    kb = Keys()
     # Additional 400 ms debounce of the key used to land here (Enter
     # from the previous app's reset chain, or the initial power-on
     # flurry).
@@ -509,29 +506,9 @@ def main():
     frame_ms = _burst.FRAME_MS if _burst is not None else 80
     last_frame_ms = time.ticks_ms()
 
-    # Keyboard self-heal: the matrix IC can go dead two ways — it isn't ready
-    # when `kb` is first built on a cold boot (menu draws, no key registers),
-    # OR it wedges mid-session while the user sits in the menu (observed: keys
-    # stop responding even though the screen keeps animating). Rebuild it
-    # UNCONDITIONALLY every 2.5 s for the whole launcher lifetime, so either
-    # failure recovers within ~2.5 s.
-    #
-    # Why unconditional and forever (no "stop once a key registers" guard, no
-    # try cap): a dead IC can return GARBAGE from get_key() rather than None,
-    # so an any-key guard gets defeated the instant the user mashes keys to
-    # wake it — exactly when they need the rebuild. The previous design capped
-    # rebuilds to the first ~7.5 s, which couldn't recover a wedge that hit
-    # later in the session — the failure users actually report. Rebuilding a
-    # healthy keyboard is effectively free: a fresh instance on a ready IC
-    # measures ~37 us to construct, so the steady-state polling cost is nil.
-    last_reinit = time.ticks_ms()
-
     while True:
         kb.tick()
         k = kb.get_key()
-        if time.ticks_diff(time.ticks_ms(), last_reinit) > 2500:
-            kb = MatrixKeyboard()
-            last_reinit = time.ticks_ms()
         intent = _intent(k)
         if intent == "up":
             cursor = (cursor - 1) % len(apps)

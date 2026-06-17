@@ -43,7 +43,7 @@ import time
 
 import M5
 import machine
-from hardware import MatrixKeyboard
+from kbheal import Keys
 
 
 # ---- palette (inlined from ui_theme, same cut snake.py uses)
@@ -117,29 +117,6 @@ _LEVELS = (
         ),
     },
 )
-
-
-class _Keys:
-    """MatrixKeyboard with the launcher's continuous self-heal: the matrix
-    IC can be dead at construction (not ready on a cold boot) or wedge
-    mid-session, so rebuild it unconditionally every 2.5 s for the whole
-    app lifetime — either failure recovers within ~2.5 s. Reconstruction is
-    effectively free (~37 us measured), so doing it forever costs nothing
-    even in the 25 ms game loop. No "stop once a key registers" guard: a
-    dead IC returns garbage rather than None, which would defeat such a
-    guard exactly when it's needed."""
-
-    def __init__(self):
-        self._kb = MatrixKeyboard()
-        self._last = time.ticks_ms()
-
-    def get(self):
-        self._kb.tick()
-        k = self._kb.get_key()
-        if time.ticks_diff(time.ticks_ms(), self._last) > 2500:
-            self._kb = MatrixKeyboard()
-            self._last = time.ticks_ms()
-        return k
 
 
 def _set_font():
@@ -488,7 +465,7 @@ def run():
         M5.Speaker.setVolume(110)
     except Exception as e:
         print("tilt_maze: speaker init warning:", e)
-    keys = _Keys()
+    keys = Keys()
     # Debounce the keypress that launched us from the App List.
     time.sleep_ms(400)
     try:

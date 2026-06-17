@@ -49,6 +49,9 @@ DEFAULT_FILES = [
     "buddy_protocol.py",
     "burst_frames.py",
     "wifi_event.py",
+    # Shared self-healing keyboard wrapper (Keys); imported by the
+    # launcher and every app from /flash root.
+    "kbheal.py",
     # Base Sepolia wallet: shared eth_* libs live at /flash root (the
     # launcher only lists apps/, so these stay out of the menu) and the
     # app itself under apps/. wallet.dat is generated on-device and is

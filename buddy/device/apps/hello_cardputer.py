@@ -41,7 +41,7 @@ import time
 
 import M5
 import machine
-from hardware import MatrixKeyboard
+from kbheal import Keys
 
 
 # Palette inlined from ui_theme — same five colors the rest of the
@@ -175,7 +175,7 @@ def run():
     _set_font()
     _draw_chrome()
 
-    kb = MatrixKeyboard()
+    kb = Keys()
     # Debounce the launch keypress — same 400 ms window the other
     # apps use — so selecting "hello_cardputer" from App List doesn't
     # immediately land as the first echoed character.

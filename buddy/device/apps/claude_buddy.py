@@ -62,7 +62,7 @@ import time
 
 import M5
 import machine
-from hardware import MatrixKeyboard
+from kbheal import Keys
 
 import buddy_ble
 import buddy_chars
@@ -283,7 +283,7 @@ def run():
     # hello_cardputer.py uses — confirmed by testing there that
     # MatrixKeyboard.get_key() is reliable inside an app context as
     # long as we tick() before reading.
-    kb = MatrixKeyboard()
+    kb = Keys()
     time.sleep_ms(400)
 
     last_footer_ms = time.ticks_ms()

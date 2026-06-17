@@ -28,7 +28,7 @@ import time
 
 import M5
 import machine
-from hardware import MatrixKeyboard
+from kbheal import Keys
 
 for _p in ("/flash", "/flash/apps"):
     if _p not in sys.path:
@@ -628,7 +628,7 @@ def run():
     _status(["Connecting WiFi..."], _ORANGE, 56)
     _ensure_wifi()
 
-    kb = MatrixKeyboard()
+    kb = Keys()
     time.sleep_ms(400)
 
     # Load or create the wallet.
