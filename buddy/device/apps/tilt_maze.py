@@ -120,25 +120,25 @@ _LEVELS = (
 
 
 class _Keys:
-    """MatrixKeyboard with the launcher's unconditional 3x self-heal:
-    a matrix IC that wasn't ready when the first instance was built
-    stays dead for the session otherwise (see main.py's loop). Rebuild
-    a few times over the first ~7.5 s. Tilt control works immediately,
-    so keys (exit/restart) only need to be live by then."""
+    """MatrixKeyboard with the launcher's continuous self-heal: the matrix
+    IC can be dead at construction (not ready on a cold boot) or wedge
+    mid-session, so rebuild it unconditionally every 2.5 s for the whole
+    app lifetime — either failure recovers within ~2.5 s. Reconstruction is
+    effectively free (~37 us measured), so doing it forever costs nothing
+    even in the 25 ms game loop. No "stop once a key registers" guard: a
+    dead IC returns garbage rather than None, which would defeat such a
+    guard exactly when it's needed."""
 
     def __init__(self):
         self._kb = MatrixKeyboard()
-        self._reinits = 0
         self._last = time.ticks_ms()
 
     def get(self):
         self._kb.tick()
         k = self._kb.get_key()
-        if (self._reinits < 3
-                and time.ticks_diff(time.ticks_ms(), self._last) > 2500):
+        if time.ticks_diff(time.ticks_ms(), self._last) > 2500:
             self._kb = MatrixKeyboard()
             self._last = time.ticks_ms()
-            self._reinits += 1
         return k
 
 
