@@ -509,30 +509,29 @@ def main():
     frame_ms = _burst.FRAME_MS if _burst is not None else 80
     last_frame_ms = time.ticks_ms()
 
-    # Keyboard self-heal: the matrix IC sometimes isn't ready when `kb` was
-    # built above, leaving it dead for the whole session (menu draws, no key
-    # registers). Rebuild it UNCONDITIONALLY a few times over the first
-    # ~7.5 s — by then the IC is definitely up.
+    # Keyboard self-heal: the matrix IC can go dead two ways — it isn't ready
+    # when `kb` is first built on a cold boot (menu draws, no key registers),
+    # OR it wedges mid-session while the user sits in the menu (observed: keys
+    # stop responding even though the screen keeps animating). Rebuild it
+    # UNCONDITIONALLY every 2.5 s for the whole launcher lifetime, so either
+    # failure recovers within ~2.5 s.
     #
-    # Why unconditional (no "stop once a key registers" guard): a dead IC can
-    # return GARBAGE from get_key() rather than None, so an any-key guard gets
-    # defeated the instant the user mashes keys to wake it — exactly when they
-    # need the rebuild. Rebuilding a healthy keyboard is harmless: it's a fresh
-    # instance on a ready IC, costs at most one dropped poll, and all of it
-    # finishes in the first 7.5 s before the user is navigating. Three tries
-    # at 2.5 s spacing also recover the slowest units far sooner than the old
-    # single 6 s attempt (which a key-mash could cancel entirely).
-    kb_reinits = 0
+    # Why unconditional and forever (no "stop once a key registers" guard, no
+    # try cap): a dead IC can return GARBAGE from get_key() rather than None,
+    # so an any-key guard gets defeated the instant the user mashes keys to
+    # wake it — exactly when they need the rebuild. The previous design capped
+    # rebuilds to the first ~7.5 s, which couldn't recover a wedge that hit
+    # later in the session — the failure users actually report. Rebuilding a
+    # healthy keyboard is effectively free: a fresh instance on a ready IC
+    # measures ~37 us to construct, so the steady-state polling cost is nil.
     last_reinit = time.ticks_ms()
 
     while True:
         kb.tick()
         k = kb.get_key()
-        if (kb_reinits < 3 and
-                time.ticks_diff(time.ticks_ms(), last_reinit) > 2500):
+        if time.ticks_diff(time.ticks_ms(), last_reinit) > 2500:
             kb = MatrixKeyboard()
             last_reinit = time.ticks_ms()
-            kb_reinits += 1
         intent = _intent(k)
         if intent == "up":
             cursor = (cursor - 1) % len(apps)
