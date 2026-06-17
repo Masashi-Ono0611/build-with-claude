@@ -64,6 +64,7 @@ DEFAULT_FILES = [
     "apps/hello_cardputer.py",
     "apps/snake.py",
     "apps/base_wallet.py",
+    "apps/tilt_maze.py",
 ]
 
 CHUNK_BYTES = 512  # source bytes per paste-mode write
