@@ -44,7 +44,7 @@ import time
 
 import M5
 import machine
-from hardware import MatrixKeyboard
+from kbheal import Keys
 
 
 # ---- palette (inlined from ui_theme; matches claude_buddy's cut)
@@ -266,7 +266,7 @@ def _play_round(kb):
 
 def run():
     _set_font()
-    kb = MatrixKeyboard()
+    kb = Keys()
     # Debounce the keypress that launched us from App List so it
     # doesn't register as an instant-direction-change.
     time.sleep_ms(400)

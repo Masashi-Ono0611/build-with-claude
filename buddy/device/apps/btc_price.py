@@ -24,7 +24,7 @@ import time
 
 import M5
 import machine
-from hardware import MatrixKeyboard
+from kbheal import Keys
 
 _BLACK = 0x000000
 _ORANGE = 0xCC785C
@@ -231,7 +231,7 @@ def run():
     take_off = 0
     _draw_take(take_lines, take_off, take_color)
 
-    kb = MatrixKeyboard()
+    kb = Keys()
     time.sleep_ms(400)
 
     price = None
